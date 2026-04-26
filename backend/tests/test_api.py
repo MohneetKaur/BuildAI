@@ -78,21 +78,29 @@ def test_full_meeting_lifecycle(client):
 
 
 def test_sign_lookup(client):
-    r = client.get("/api/signs/lookup", params={"text": "I need help with the deploy today"})
+    """WLASL has ~1959 words — verify common content words match."""
+    r = client.get("/api/signs/lookup", params={"text": "I need help today"})
     assert r.status_code == 200
     clips = r.json()
     matched_words = {c["word"] for c in clips}
     assert "help" in matched_words
-    assert "deploy" in matched_words
+    assert "today" in matched_words
+    # each clip has the new WLASL fields
+    for clip in clips:
+        assert clip["video_type"] in ("mp4", "youtube")
+        assert clip["video_url"]
 
 
 def test_sign_vocabulary(client):
+    """Backed by real WLASL dataset (~1959 signs)."""
     r = client.get("/api/signs/vocabulary")
     assert r.status_code == 200
     vocab = r.json()
     assert isinstance(vocab, list)
+    assert len(vocab) > 1500, f"Expected ~1959 WLASL signs, got {len(vocab)}"
     assert "hello" in vocab
-    assert "deploy" in vocab
+    assert "doctor" in vocab
+    assert "today" in vocab
 
 
 def test_unknown_meeting_404(client):

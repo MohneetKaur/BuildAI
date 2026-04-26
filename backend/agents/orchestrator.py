@@ -83,7 +83,7 @@ class Orchestrator(BaseAgent):
             )
 
         # 3. Translate (cleanup + optional translation)
-        raw = capture["text_hint"] or "(audio not transcribed in mock mode)"
+        raw = capture["text_hint"] or "(no transcription available — audio decoding failed)"
         translation = await self.translate.run(raw_text=raw, target_language=target_language)
         cleaned = translation["text"]
         provider = translation.get("provider")

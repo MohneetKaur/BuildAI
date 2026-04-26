@@ -47,6 +47,11 @@ class SignClip(BaseModel):
     video_url: str
     duration_ms: int
     description: str
+    video_type: Literal["mp4", "youtube"] = "mp4"
+    youtube_id: str | None = None
+    start_seconds: float = 0.0
+    end_seconds: float | None = None
+    source: str = ""
 
 
 class TranscriptSegment(BaseModel):

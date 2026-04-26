@@ -28,6 +28,11 @@ export interface SignClip {
   video_url: string;
   duration_ms: number;
   description: string;
+  video_type: "mp4" | "youtube";
+  youtube_id: string | null;
+  start_seconds: number;
+  end_seconds: number | null;
+  source: string;
 }
 
 export interface TranscriptSegment {

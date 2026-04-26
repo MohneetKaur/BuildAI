@@ -66,15 +66,17 @@ async def health() -> HealthResponse:
         active = "gemini"
     elif router_._claude_client is not None:
         active = "claude"
+    sign_lookup_size = get_sign_lookup().size()
+    sign_is_mock = sign_lookup_size < 100  # WLASL has 1959 — anything smaller is fallback/mock
     return HealthResponse(
         status="ok" if router_.has_any_provider else "degraded",
         llm_provider_active=active,
         has_gemini=router_._gemini_client is not None,
         has_claude=router_._claude_client is not None,
         has_hf_token=bool(settings.hf_token),
-        mock_mode=settings.use_mock_diarization or settings.use_mock_sign_lookup,
+        mock_mode=settings.use_mock_diarization or sign_is_mock,
         mock_diarization=settings.use_mock_diarization,
-        mock_sign_lookup=settings.use_mock_sign_lookup,
+        mock_sign_lookup=sign_is_mock,
     )
 
 

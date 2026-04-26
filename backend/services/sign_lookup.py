@@ -1,96 +1,77 @@
 """Sign clip lookup service.
 
-Maps English words to sign-language video clips. Uses Spread The Sign
-public CDN (https://media.spreadthesign.com) for ASL clips when available,
-with graceful fallback to a placeholder visual on the frontend.
+Backed by the **WLASL dataset** (Word-Level American Sign Language, Li et al. 2020):
+2000 ASL glosses with multiple video instances each.
 
-To replace with WLASL pretrained recognition (camera → sign → word), build
-a separate visual classifier — this service is for the OUTPUT direction
-(text → sign clip).
+We pre-process WLASL_v0.3.json once via `scripts/build_wlasl_library.py` into
+`data/wlasl_library.json` — a flat dict mapping each English gloss to:
+  - a direct MP4 URL on Microsoft signschool/Azure (preferred), or
+  - a YouTube embed (fallback)
+plus start/end timing, signer ID, and source attribution.
+
+This service does word-level lookup against ~1959 WLASL signs. It does NOT
+perform real ASL grammar (which needs continuous sign translation models).
+For sign-to-text input recognition (camera -> word), see roadmap: WLASL
+pretrained classifiers exist on HuggingFace but require ~15h of integration.
 """
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
+
 from api.models import SignClip
 
+logger = logging.getLogger(__name__)
 
-# Curated mapping of common words → public ASL video URLs from Spread The Sign.
-# When the URL 404s (rare) or CORS fails, the frontend falls back to an
-# enhanced sign tile with the word and animated hand emoji.
-_SIGN_DATA: dict[str, dict[str, str | int]] = {
-    # Greetings / basics
-    "hello":      {"url": "https://media.spreadthesign.com/video/mp4/13/52183.mp4", "duration_ms": 1400},
-    "thank you":  {"url": "https://media.spreadthesign.com/video/mp4/13/52337.mp4", "duration_ms": 1500},
-    "yes":        {"url": "https://media.spreadthesign.com/video/mp4/13/53005.mp4", "duration_ms": 1100},
-    "no":         {"url": "https://media.spreadthesign.com/video/mp4/13/52508.mp4", "duration_ms": 1100},
-    "please":     {"url": "https://media.spreadthesign.com/video/mp4/13/52617.mp4", "duration_ms": 1300},
-    "sorry":      {"url": "https://media.spreadthesign.com/video/mp4/13/52749.mp4", "duration_ms": 1400},
-    "help":       {"url": "https://media.spreadthesign.com/video/mp4/13/52189.mp4", "duration_ms": 1300},
-    "stop":       {"url": "https://media.spreadthesign.com/video/mp4/13/52786.mp4", "duration_ms": 1100},
-
-    # Meeting vocabulary
-    "meeting":    {"url": "https://media.spreadthesign.com/video/mp4/13/52443.mp4", "duration_ms": 1500},
-    "agenda":     {"url": "", "duration_ms": 1400},
-    "deadline":   {"url": "", "duration_ms": 1400},
-    "blocker":    {"url": "", "duration_ms": 1400},
-    "deploy":     {"url": "", "duration_ms": 1400},
-    "review":     {"url": "https://media.spreadthesign.com/video/mp4/13/52676.mp4", "duration_ms": 1500},
-    "question":   {"url": "https://media.spreadthesign.com/video/mp4/13/52647.mp4", "duration_ms": 1300},
-    "answer":     {"url": "https://media.spreadthesign.com/video/mp4/13/51769.mp4", "duration_ms": 1300},
-    "team":       {"url": "https://media.spreadthesign.com/video/mp4/13/52911.mp4", "duration_ms": 1300},
-    "project":    {"url": "https://media.spreadthesign.com/video/mp4/13/52635.mp4", "duration_ms": 1500},
-    "today":      {"url": "https://media.spreadthesign.com/video/mp4/13/52946.mp4", "duration_ms": 1300},
-    "tomorrow":   {"url": "https://media.spreadthesign.com/video/mp4/13/52949.mp4", "duration_ms": 1300},
-
-    # Medical
-    "doctor":     {"url": "https://media.spreadthesign.com/video/mp4/13/52042.mp4", "duration_ms": 1400},
-    "pain":       {"url": "https://media.spreadthesign.com/video/mp4/13/52568.mp4", "duration_ms": 1300},
-    "water":      {"url": "https://media.spreadthesign.com/video/mp4/13/53117.mp4", "duration_ms": 1300},
-    "medicine":   {"url": "https://media.spreadthesign.com/video/mp4/13/52442.mp4", "duration_ms": 1400},
-    "emergency":  {"url": "", "duration_ms": 1400},
-    "hospital":   {"url": "https://media.spreadthesign.com/video/mp4/13/52210.mp4", "duration_ms": 1400},
-
-    # Business
-    "money":      {"url": "https://media.spreadthesign.com/video/mp4/13/52471.mp4", "duration_ms": 1300},
-    "budget":     {"url": "", "duration_ms": 1400},
-    "client":     {"url": "", "duration_ms": 1400},
-    "report":     {"url": "https://media.spreadthesign.com/video/mp4/13/52674.mp4", "duration_ms": 1500},
-    "approve":    {"url": "", "duration_ms": 1400},
-    "decision":   {"url": "https://media.spreadthesign.com/video/mp4/13/51996.mp4", "duration_ms": 1500},
-
-    # Common verbs
-    "need":       {"url": "https://media.spreadthesign.com/video/mp4/13/52490.mp4", "duration_ms": 1300},
-    "want":       {"url": "https://media.spreadthesign.com/video/mp4/13/53108.mp4", "duration_ms": 1300},
-    "see":        {"url": "https://media.spreadthesign.com/video/mp4/13/52706.mp4", "duration_ms": 1100},
-    "understand": {"url": "https://media.spreadthesign.com/video/mp4/13/52985.mp4", "duration_ms": 1500},
-    "think":      {"url": "https://media.spreadthesign.com/video/mp4/13/52933.mp4", "duration_ms": 1300},
-    "work":       {"url": "https://media.spreadthesign.com/video/mp4/13/53160.mp4", "duration_ms": 1300},
-    "talk":       {"url": "https://media.spreadthesign.com/video/mp4/13/52887.mp4", "duration_ms": 1300},
-    "listen":     {"url": "https://media.spreadthesign.com/video/mp4/13/52399.mp4", "duration_ms": 1300},
-}
+LIBRARY_PATH = Path(__file__).resolve().parent.parent / "data" / "wlasl_library.json"
 
 
-MOCK_SIGN_LIBRARY: dict[str, SignClip] = {
-    word: SignClip(
-        id=f"wlasl-{word.replace(' ', '-')}",
-        word=word,
-        video_url=str(data.get("url", "")),
-        duration_ms=int(data.get("duration_ms", 1300)),
-        description=f"ASL sign for '{word}'",
-    )
-    for word, data in _SIGN_DATA.items()
-}
+def _load_library() -> dict[str, SignClip]:
+    if not LIBRARY_PATH.exists():
+        logger.warning("WLASL library not found at %s — falling back to empty.", LIBRARY_PATH)
+        logger.warning("Run: python scripts/build_wlasl_library.py")
+        return {}
+    with open(LIBRARY_PATH) as f:
+        raw = json.load(f)
+    library = {
+        word: SignClip(
+            id=entry["id"],
+            word=entry["word"],
+            video_url=entry["video_url"],
+            duration_ms=int(entry.get("duration_ms", 1500)),
+            description=entry.get("description", f"ASL sign for '{word}'"),
+            video_type=entry.get("video_type", "mp4"),
+            youtube_id=entry.get("youtube_id"),
+            start_seconds=float(entry.get("start_seconds", 0.0) or 0.0),
+            end_seconds=(float(entry["end_seconds"]) if entry.get("end_seconds") else None),
+            source=entry.get("source", "wlasl"),
+        )
+        for word, entry in raw.items()
+    }
+    logger.info("Loaded WLASL library: %d signs", len(library))
+    return library
+
+
+WLASL_LIBRARY: dict[str, SignClip] = _load_library()
 
 
 class SignLookup:
     def __init__(self, library: dict[str, SignClip] | None = None) -> None:
-        self._library = library or MOCK_SIGN_LIBRARY
+        self._library = library if library is not None else WLASL_LIBRARY
 
-    def find_signs(self, text: str, max_clips: int = 5) -> list[SignClip]:
-        words = [w.strip(".,!?;:'\"").lower() for w in text.split()]
+    def find_signs(self, text: str, max_clips: int = 6) -> list[SignClip]:
+        """Word-level match: tokenize, normalize, look up in WLASL.
+
+        Common stopwords are skipped to surface signs for content words.
+        """
+        words = [w.strip(".,!?;:'\"()[]").lower() for w in text.split()]
         matched: list[SignClip] = []
         seen: set[str] = set()
         for word in words:
-            if word in self._library and word not in seen:
+            if not word or word in _STOPWORDS or word in seen:
+                continue
+            if word in self._library:
                 matched.append(self._library[word])
                 seen.add(word)
                 if len(matched) >= max_clips:
@@ -99,6 +80,23 @@ class SignLookup:
 
     def vocabulary(self) -> list[str]:
         return sorted(self._library.keys())
+
+    def size(self) -> int:
+        return len(self._library)
+
+
+# Don't show signs for high-frequency function words — they clutter the UI
+_STOPWORDS = {
+    "a", "an", "the", "is", "am", "are", "was", "were", "be", "been", "being",
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+    "my", "your", "his", "its", "our", "their",
+    "of", "to", "in", "on", "at", "by", "for", "with", "from", "as", "into",
+    "and", "or", "but", "so", "if", "then", "than",
+    "do", "does", "did", "have", "has", "had",
+    "this", "that", "these", "those",
+    "will", "would", "shall", "should", "can", "could", "may", "might", "must",
+    "not", "no",  # 'no' has its own sign elsewhere if needed
+}
 
 
 _lookup_singleton: SignLookup | None = None
