@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
 
+    hf_token: str = ""
+
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"

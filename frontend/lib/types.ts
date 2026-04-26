@@ -37,7 +37,34 @@ export interface TranscriptSegment {
   text: string;
   timestamp: string;
   sign_clip_ids: string[];
+  sign_clips: SignClip[];
   confidence: number;
+  llm_provider: "gemini" | "claude" | null;
+  llm_latency_ms: number | null;
+  llm_was_fallback: boolean;
+}
+
+export interface StreamEvent {
+  type: "agent" | "segment" | "error" | "done";
+  timestamp: string;
+  agent_event?: AgentEvent;
+  segment?: TranscriptSegment;
+  error?: string;
+}
+
+export interface LLMStats {
+  total_calls: number;
+  gemini_calls: number;
+  claude_calls: number;
+  fallback_count: number;
+  failed_calls: number;
+  total_latency_ms: number;
+  avg_latency_ms: number;
+  total_tokens_in: number;
+  total_tokens_out: number;
+  total_tokens: number;
+  last_provider: string | null;
+  last_call_at_ms: number;
 }
 
 export interface ActionItem {

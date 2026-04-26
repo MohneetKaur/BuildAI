@@ -1,12 +1,15 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, Loader2, Play, Send, Square } from "lucide-react";
+import { ArrowLeft, Loader2, Play, Send, Sparkles, Square, Zap } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ActionItemsList } from "@/components/ActionItemsList";
 import { AgentActivityPanel } from "@/components/AgentActivityPanel";
 import { CaptionStream } from "@/components/CaptionStream";
+import { LLMStatsFooter } from "@/components/LLMStatsFooter";
+import { LanguagePicker } from "@/components/LanguagePicker";
+import { MediaRecorderMic } from "@/components/MediaRecorderMic";
 import { SignClipPlayer } from "@/components/SignClipPlayer";
 import { SpeakerCard } from "@/components/SpeakerCard";
 import { api } from "@/lib/api-client";
@@ -15,15 +18,16 @@ import type {
   CreateMeetingResponse,
   MeetingSummary,
   Speaker,
+  StreamEvent,
   TranscriptSegment,
 } from "@/lib/types";
 
 const DEMO_PROMPTS = [
-  { speaker: "Sarah", text: "Quick standup. Today I'm deploying the new auth service." },
-  { speaker: "Raj", text: "I have a blocker with the database migration, need help." },
-  { speaker: "Priya", text: "Sarah will own the deploy and Raj reviews tomorrow morning." },
-  { speaker: "Sarah", text: "Sounds good. The deadline for the deploy is end of day." },
-  { speaker: "Raj", text: "Thank you. I'll send a question if I get stuck." },
+  "Quick standup. Today I'm deploying the new auth service.",
+  "I have a blocker with the database migration, need help.",
+  "Sarah will own the deploy and Raj reviews tomorrow morning.",
+  "Sounds good. The deadline for the deploy is end of day.",
+  "Thank you. I'll send a question if I get stuck.",
 ];
 
 export default function MeetingPage() {
@@ -37,7 +41,14 @@ export default function MeetingPage() {
   const [demoIndex, setDemoIndex] = useState(0);
   const [manualText, setManualText] = useState("");
   const [summary, setSummary] = useState<MeetingSummary | null>(null);
-  const [health, setHealth] = useState<{ has_gemini: boolean; has_claude: boolean; status: string } | null>(null);
+  const [language, setLanguage] = useState("en");
+  const [useStreaming, setUseStreaming] = useState(false);
+  const [health, setHealth] = useState<{
+    has_gemini: boolean;
+    has_claude: boolean;
+    has_hf_token: boolean;
+    status: string;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -47,7 +58,7 @@ export default function MeetingPage() {
   async function startMeeting() {
     setError(null);
     try {
-      const m = await api.createMeeting("Sprint standup demo", ["Sarah", "Raj", "Priya"]);
+      const m = await api.createMeeting("Sprint standup demo", ["Sarah", "Raj", "Priya"], "general", language);
       setMeeting(m);
       const initial: Speaker[] = [
         { id: "1", name: "Sarah", color: "#6366f1" },
@@ -64,12 +75,54 @@ export default function MeetingPage() {
     }
   }
 
+  async function sendSegmentBatch(text: string) {
+    if (!meeting) return;
+    const res = await api.transcribe(meeting.meeting_id, text, language);
+    setTranscript((t) => [...t, res.segment]);
+    setLatestSegment(res.segment);
+    setActiveSpeakerId(res.segment.speaker.id);
+    setEvents((ev) => [...ev, ...res.events]);
+    setTimeout(() => setActiveSpeakerId(null), 1500);
+  }
+
+  async function sendSegmentStreaming(text: string) {
+    if (!meeting) return;
+    await api.transcribeStream(meeting.meeting_id, text, language, (event: StreamEvent) => {
+      if (event.type === "agent" && event.agent_event) {
+        setEvents((ev) => [...ev, event.agent_event!]);
+      } else if (event.type === "segment" && event.segment) {
+        const seg = event.segment;
+        setTranscript((t) => [...t, seg]);
+        setLatestSegment(seg);
+        setActiveSpeakerId(seg.speaker.id);
+        setTimeout(() => setActiveSpeakerId(null), 1500);
+      }
+    });
+  }
+
   async function sendSegment(text: string) {
     if (!meeting || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await api.transcribe(meeting.meeting_id, text);
+      if (useStreaming) {
+        await sendSegmentStreaming(text);
+      } else {
+        await sendSegmentBatch(text);
+      }
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendAudio(wav: Blob) {
+    if (!meeting || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.transcribeAudio(meeting.meeting_id, wav, language);
       setTranscript((t) => [...t, res.segment]);
       setLatestSegment(res.segment);
       setActiveSpeakerId(res.segment.speaker.id);
@@ -84,8 +137,7 @@ export default function MeetingPage() {
 
   async function nextDemoSegment() {
     if (demoIndex >= DEMO_PROMPTS.length) return;
-    const p = DEMO_PROMPTS[demoIndex];
-    await sendSegment(p.text);
+    await sendSegment(DEMO_PROMPTS[demoIndex]);
     setDemoIndex(demoIndex + 1);
   }
 
@@ -103,7 +155,7 @@ export default function MeetingPage() {
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden">
+    <div className="relative min-h-screen overflow-hidden pb-16">
       <div className="absolute inset-0 grid-bg opacity-30" />
       <div className="absolute -top-40 left-1/2 h-[500px] w-[500px] -translate-x-1/2 rounded-full bg-accent-violet/20 blur-3xl" />
 
@@ -117,19 +169,43 @@ export default function MeetingPage() {
             <ArrowLeft className="h-4 w-4" />
             Back
           </Link>
-          {health && (
-            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs">
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  health.status === "ok" ? "bg-accent-lime animate-pulse-soft" : "bg-yellow-400"
-                }`}
-              />
-              <span className="text-ink-100/70">
-                {health.has_gemini ? "Gemini" : health.has_claude ? "Claude" : "No LLM"} ·{" "}
-                {health.status}
-              </span>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            <LanguagePicker value={language} onChange={setLanguage} disabled={busy} />
+            <button
+              onClick={() => setUseStreaming((s) => !s)}
+              className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] uppercase tracking-wider transition ${
+                useStreaming
+                  ? "border-accent-lime/30 bg-accent-lime/10 text-accent-lime"
+                  : "border-white/10 bg-white/5 text-ink-100/60"
+              }`}
+            >
+              <Zap className="h-3 w-3" />
+              {useStreaming ? "SSE on" : "SSE off"}
+            </button>
+            {health && (
+              <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    health.status === "ok" ? "bg-accent-lime animate-pulse-soft" : "bg-yellow-400"
+                  }`}
+                />
+                <span className="text-ink-100/70">
+                  {health.has_gemini && "Gemini"}
+                  {health.has_gemini && health.has_claude && " + "}
+                  {health.has_claude && "Claude"}
+                  {!health.has_gemini && !health.has_claude && "No LLM"}
+                  {" · "}
+                  {health.status}
+                </span>
+              </div>
+            )}
+            {health?.has_hf_token && (
+              <div className="flex items-center gap-1.5 rounded-full border border-accent-lime/30 bg-accent-lime/10 px-2.5 py-1 text-[10px] uppercase tracking-wider text-accent-lime">
+                <Sparkles className="h-3 w-3" />
+                HF
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="mb-6">
@@ -137,7 +213,9 @@ export default function MeetingPage() {
             Live <span className="text-gradient">meeting</span>
           </h1>
           <p className="mt-1 text-sm text-ink-100/60">
-            {meeting ? `Meeting ${meeting.meeting_id} · ${meeting.title}` : "Start a meeting to see the agentic pipeline in action."}
+            {meeting
+              ? `Meeting ${meeting.meeting_id} · ${meeting.title}`
+              : "Start a meeting to see the agentic pipeline in action."}
           </p>
         </div>
 
@@ -179,15 +257,11 @@ export default function MeetingPage() {
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <button
-                  onClick={nextDemoSegment}
-                  disabled={busy || demoIndex >= DEMO_PROMPTS.length || !!summary}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-accent-violet to-accent-fuchsia py-3 text-sm font-semibold text-white shadow-glow transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100"
-                >
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                  Next demo line ({demoIndex}/{DEMO_PROMPTS.length})
-                </button>
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-ink-100/70">
+                  Live input
+                </h3>
+                <MediaRecorderMic onAudioReady={sendAudio} disabled={!!summary} busy={busy} />
 
                 <div className="flex gap-2">
                   <input
@@ -199,8 +273,9 @@ export default function MeetingPage() {
                         setManualText("");
                       }
                     }}
-                    placeholder="Type a line..."
-                    className="flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm placeholder:text-ink-100/30 focus:border-accent-violet/50 focus:outline-none"
+                    placeholder="Or type a line..."
+                    disabled={busy || !!summary}
+                    className="flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm placeholder:text-ink-100/30 focus:border-accent-violet/50 focus:outline-none disabled:opacity-40"
                   />
                   <button
                     onClick={() => {
@@ -209,12 +284,21 @@ export default function MeetingPage() {
                         setManualText("");
                       }
                     }}
-                    disabled={busy || !manualText.trim()}
+                    disabled={busy || !manualText.trim() || !!summary}
                     className="rounded-xl border border-white/10 bg-white/5 px-3 transition hover:bg-white/10 disabled:opacity-40"
                   >
                     <Send className="h-4 w-4" />
                   </button>
                 </div>
+
+                <button
+                  onClick={nextDemoSegment}
+                  disabled={busy || demoIndex >= DEMO_PROMPTS.length || !!summary}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] py-2 text-xs font-medium text-ink-100/70 transition hover:bg-white/[0.06] disabled:opacity-40"
+                >
+                  {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                  Scripted demo line ({demoIndex}/{DEMO_PROMPTS.length})
+                </button>
 
                 <button
                   onClick={endMeeting}
@@ -240,7 +324,6 @@ export default function MeetingPage() {
           </div>
         )}
 
-        {/* Summary modal */}
         <AnimatePresence>
           {summary && (
             <motion.div
@@ -302,6 +385,8 @@ export default function MeetingPage() {
           )}
         </AnimatePresence>
       </div>
+
+      <LLMStatsFooter />
     </div>
   );
 }

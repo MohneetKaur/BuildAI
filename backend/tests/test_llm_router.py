@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from llm_router import LLMResponse, LLMRouter, Provider  # noqa: E402
+from llm_router import LLMResponse, LLMRouter, Provider, RouterStats  # noqa: E402
 
 
 class _FakeGeminiOK:
@@ -58,6 +58,7 @@ def _make_router(gemini=None, claude=None) -> LLMRouter:
     r.claude_model = "claude-sonnet-4-6"
     r._gemini_client = gemini
     r._claude_client = claude
+    r.stats = RouterStats()
     return r
 
 

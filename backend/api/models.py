@@ -32,22 +32,13 @@ class TranscribeRequest(BaseModel):
     meeting_id: str
     audio_chunk_b64: str | None = None
     text: str | None = None  # for testing without real audio
+    target_language: str = "en"  # ISO code: en, es, zh, hi, fr, de, ar, pt, ja, ko
 
 
 class Speaker(BaseModel):
     id: str
     name: str
     color: str  # hex color for UI
-
-
-class TranscriptSegment(BaseModel):
-    id: str
-    meeting_id: str
-    speaker: Speaker
-    text: str
-    timestamp: datetime
-    sign_clip_ids: list[str] = Field(default_factory=list)
-    confidence: float = 1.0
 
 
 class SignClip(BaseModel):
@@ -58,12 +49,38 @@ class SignClip(BaseModel):
     description: str
 
 
+class TranscriptSegment(BaseModel):
+    id: str
+    meeting_id: str
+    speaker: Speaker
+    text: str
+    timestamp: datetime
+    sign_clip_ids: list[str] = Field(default_factory=list)
+    sign_clips: list[SignClip] = Field(default_factory=list)
+    confidence: float = 1.0
+    llm_provider: str | None = None  # "gemini" | "claude" | None
+    llm_latency_ms: int | None = None
+    llm_was_fallback: bool = False
+
+
 class AgentEvent(BaseModel):
     agent: Literal["orchestrator", "listening", "speaker_id", "translate", "sign_out", "action"]
     status: Literal["thinking", "active", "done", "error"]
     message: str
     timestamp: datetime
     meta: dict | None = None
+
+
+class StreamEvent(BaseModel):
+    """SSE event sent during streaming transcription."""
+    type: Literal["agent", "segment", "error", "done"]
+    timestamp: datetime
+    # Populated for type="agent":
+    agent_event: AgentEvent | None = None
+    # Populated for type="segment" (the final result):
+    segment: TranscriptSegment | None = None
+    # Populated for type="error":
+    error: str | None = None
 
 
 class ActionItem(BaseModel):
@@ -91,4 +108,22 @@ class HealthResponse(BaseModel):
     llm_provider_active: str | None
     has_gemini: bool
     has_claude: bool
-    mock_mode: bool
+    has_hf_token: bool = False
+    mock_mode: bool  # legacy: true if ANY mock is active
+    mock_diarization: bool = True
+    mock_sign_lookup: bool = True
+
+
+class LLMStats(BaseModel):
+    total_calls: int
+    gemini_calls: int
+    claude_calls: int
+    fallback_count: int
+    failed_calls: int
+    total_latency_ms: int
+    avg_latency_ms: int
+    total_tokens_in: int
+    total_tokens_out: int
+    total_tokens: int
+    last_provider: str | None
+    last_call_at_ms: int
